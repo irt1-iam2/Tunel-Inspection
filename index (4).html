@@ -1,0 +1,305 @@
+<script type="text/javascript">
+        var gk_isXlsx = false;
+        var gk_xlsxFileLookup = {};
+        var gk_fileData = {};
+        function filledCell(cell) {
+          return cell !== '' && cell != null;
+        }
+        function loadFileData(filename) {
+        if (gk_isXlsx && gk_xlsxFileLookup[filename]) {
+            try {
+                var workbook = XLSX.read(gk_fileData[filename], { type: 'base64' });
+                var firstSheetName = workbook.SheetNames[0];
+                var worksheet = workbook.Sheets[firstSheetName];
+
+                // Convert sheet to JSON to filter blank rows
+                var jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1, blankrows: false, defval: '' });
+                // Filter out blank rows (rows where all cells are empty, null, or undefined)
+                var filteredData = jsonData.filter(row => row.some(filledCell));
+
+                // Heuristic to find the header row by ignoring rows with fewer filled cells than the next row
+                var headerRowIndex = filteredData.findIndex((row, index) =>
+                  row.filter(filledCell).length >= filteredData[index + 1]?.filter(filledCell).length
+                );
+                // Fallback
+                if (headerRowIndex === -1 || headerRowIndex > 25) {
+                  headerRowIndex = 0;
+                }
+
+                // Convert filtered JSON back to CSV
+                var csv = XLSX.utils.aoa_to_sheet(filteredData.slice(headerRowIndex)); // Create a new sheet from filtered array of arrays
+                csv = XLSX.utils.sheet_to_csv(csv, { header: 1 });
+                return csv;
+            } catch (e) {
+                console.error(e);
+                return "";
+            }
+        }
+        return gk_fileData[filename] || "";
+        }
+        </script><!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Inspección de Losas de Túnel</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="/xlsx.full.min.js"></script>
+    <meta name="description" content="Aplicación offline para inspección de losas de túnel">
+    <link rel="manifest" href="manifest.json">
+    <meta name="theme-color" content="#1f2937">
+</head>
+<body class="bg-gray-100 font-sans">
+    <div class="container mx-auto p-4">
+        <h1 class="text-3xl font-bold text-center text-gray-800 mb-6">Inspección de Losas de Túnel</h1>
+
+        <!-- Formulario de Inspección -->
+        <div class="bg-white p-6 rounded-lg shadow-md mb-6">
+            <h2 class="text-xl font-semibold mb-4">Registrar Inspección</h2>
+            <div class="grid grid-cols-1 gap-4">
+                <select id="losaId" class="border p-2 rounded w-full">
+                    <option value="" disabled>Selecciona ID de Losa</option>
+                </select>
+                <input id="fecha" type="date" class="border p-2 rounded w-full" readonly>
+                <div class="flex items-center gap-2">
+                    <input id="losaBien" type="checkbox" class="h-5 w-5">
+                    <label for="losaBien">Losa en buen estado (sin patologías)</label>
+                </div>
+                <select id="patologia" class="border p-2 rounded w-full">
+                    <option value="" disabled selected>Selecciona Patología</option>
+                    <option value="Fisura">Fisura</option>
+                    <option value="Desportillamiento">Desportillamiento</option>
+                    <option value="Junta">Junta</option>
+                    <option value="Escalonamiento">Escalonamiento</option>
+                </select>
+                <input id="longitud" type="number" min="0" step="0.1" placeholder="Longitud de la patología (cm)" class="border p-2 rounded w-full">
+                <select id="estado" class="border p-2 rounded w-full">
+                    <option value="Bueno">Bueno</option>
+                    <option value="Regular">Regular</option>
+                    <option value="Malo">Malo</option>
+                </select>
+                <button id="guardarBtn" onclick="guardarInspeccion()" class="bg-blue-500 text-white p-2 rounded hover:bg-blue-600">Guardar Inspección</button>
+            </div>
+        </div>
+
+        <!-- Tabla de Inspecciones -->
+        <div class="bg-white p-6 rounded-lg shadow-md">
+            <div class="flex justify-between items-center mb-4">
+                <h2 class="text-xl font-semibold">Registros de Inspecciones</h2>
+                <button onclick="exportarAExcel()" class="bg-green-500 text-white p-2 rounded hover:bg-green-600">Exportar a Excel</button>
+            </div>
+            <table class="w-full table-auto">
+                <thead>
+                    <tr class="bg-gray-200">
+                        <th class="p-2">ID Losa</th>
+                        <th class="p-2">Fecha</th>
+                        <th class="p-2">Patología</th>
+                        <th class="p-2">Longitud (cm)</th>
+                        <th class="p-2">Estado</th>
+                        <th class="p-2">Acciones</th>
+                    </tr>
+                </thead>
+                <tbody id="inspeccionesTable"></tbody>
+            </table>
+        </div>
+    </div>
+
+    <script>
+        // Generar secuencia de losas en orden alternado
+        function generarSecuenciaLosas() {
+            const losas = [];
+            for (let i = 1; i <= 162; i++) {
+                losas.push(i.toString());
+                losas.push((i + 162).toString());
+            }
+            return losas;
+        }
+
+        // Cargar opciones para el dropdown de losas
+        function cargarOpcionesLosas() {
+            const losaSelect = document.getElementById('losaId');
+            const inspecciones = JSON.parse(localStorage.getItem('inspecciones') || '[]');
+            const losasExistentes = inspecciones.map(ins => ins.losaId);
+            const losas = generarSecuenciaLosas();
+
+            // Filtrar losas no inspeccionadas
+            const losasDisponibles = losas.filter(losa => !losasExistentes.includes(losa));
+
+            // Limpiar dropdown
+            losaSelect.innerHTML = '<option value="" disabled>Selecciona ID de Losa</option>';
+
+            // Si no hay losas disponibles, deshabilitar el formulario
+            if (losasDisponibles.length === 0) {
+                losaSelect.disabled = true;
+                document.getElementById('losaBien').disabled = true;
+                document.getElementById('patologia').disabled = true;
+                document.getElementById('longitud').disabled = true;
+                document.getElementById('estado').disabled = true;
+                document.getElementById('guardarBtn').disabled = true;
+                losaSelect.innerHTML = '<option value="" disabled>No hay losas disponibles</option>';
+                return;
+            }
+
+            // Agregar opciones al dropdown
+            losasDisponibles.forEach(losa => {
+                const option = document.createElement('option');
+                option.value = losa;
+                option.textContent = `Losa ${losa} (${losa <= 162 ? 'Carril Derecho' : 'Carril Izquierdo'})`;
+                losaSelect.appendChild(option);
+            });
+
+            // Seleccionar automáticamente la primera losa disponible
+            losaSelect.value = losasDisponibles[0];
+        }
+
+        // Establecer fecha actual automáticamente
+        function establecerFechaActual() {
+            const fechaInput = document.getElementById('fecha');
+            const today = new Date().toISOString().split('T')[0];
+            fechaInput.value = today;
+        }
+
+        // Habilitar/deshabilitar campos de patología y longitud según el checkbox
+        function manejarCamposPatologia() {
+            const losaBien = document.getElementById('losaBien').checked;
+            const patologiaSelect = document.getElementById('patologia');
+            const longitudInput = document.getElementById('longitud');
+            const estadoSelect = document.getElementById('estado');
+
+            if (losaBien) {
+                patologiaSelect.disabled = true;
+                longitudInput.disabled = true;
+                patologiaSelect.value = '';
+                longitudInput.value = '';
+                estadoSelect.value = 'Bueno';
+                estadoSelect.disabled = true;
+            } else {
+                patologiaSelect.disabled = false;
+                longitudInput.disabled = false;
+                estadoSelect.disabled = false;
+            }
+        }
+
+        // Exportar tabla a Excel
+        function exportarAExcel() {
+            try {
+                if (!window.XLSX) {
+                    alert('Error: La librería de exportación a Excel no está disponible.');
+                    return;
+                }
+                const inspecciones = JSON.parse(localStorage.getItem('inspecciones') || '[]');
+                const data = inspecciones.map(ins => ({
+                    'ID Losa': ins.losaId,
+                    'Fecha': ins.fecha,
+                    'Patología': ins.patologia,
+                    'Longitud (cm)': ins.longitud,
+                    'Estado': ins.estado
+                }));
+
+                const worksheet = XLSX.utils.json_to_sheet(data);
+                const workbook = XLSX.utils.book_new();
+                XLSX.utils.book_append_sheet(workbook, worksheet, 'Inspecciones');
+                XLSX.write(workbook, 'Inspecciones_Tunel.xlsx');
+            } catch (error) {
+                console.error('Error al exportar a Excel:', error);
+                alert('Ocurrió un error al exportar los datos. Por favor, verifica la consola del navegador para más detalles.');
+            }
+        }
+
+        // Cargar inspecciones y configuraciones al iniciar
+        document.addEventListener('DOMContentLoaded', () => {
+            cargarOpcionesLosas();
+            establecerFechaActual();
+            cargarInspecciones();
+            document.getElementById('losaBien').addEventListener('change', manejarCamposPatologia);
+            manejarCamposPatologia();
+        });
+
+        function guardarInspeccion() {
+            const losaId = document.getElementById('losaId').value;
+            const fecha = document.getElementById('fecha').value;
+            const losaBien = document.getElementById('losaBien').checked;
+            const patologia = document.getElementById('patologia').value;
+            const longitud = document.getElementById('longitud').value;
+            const estado = document.getElementById('estado').value;
+
+            if (!losaId || !fecha) {
+                alert('Por favor, completa los campos obligatorios.');
+                return;
+            }
+
+            if (!losaBien && (!patologia || !longitud)) {
+                alert('Por favor, selecciona una patología y especifica la longitud, o marca la losa como en buen estado.');
+                return;
+            }
+
+            if (!losaBien && longitud < 0) {
+                alert('La longitud no puede ser negativa.');
+                return;
+            }
+
+            const inspeccion = {
+                losaId,
+                fecha,
+                patologia: losaBien ? 'Ninguna' : patologia,
+                longitud: losaBien ? '0' : longitud,
+                estado: losaBien ? 'Bueno' : estado
+            };
+            let inspecciones = JSON.parse(localStorage.getItem('inspecciones') || '[]');
+            inspecciones.push(inspeccion);
+            localStorage.setItem('inspecciones', JSON.stringify(inspecciones));
+
+            // Limpiar formulario
+            document.getElementById('losaBien').checked = false;
+            document.getElementById('patologia').value = '';
+            document.getElementById('longitud').value = '';
+            document.getElementById('estado').value = 'Bueno';
+            manejarCamposPatologia();
+            // Recargar opciones de losas y fecha
+            cargarOpcionesLosas();
+            establecerFechaActual();
+
+            cargarInspecciones();
+        }
+
+        function cargarInspecciones() {
+            const inspecciones = JSON.parse(localStorage.getItem('inspecciones') || '[]');
+            const tableBody = document.getElementById('inspeccionesTable');
+            tableBody.innerHTML = '';
+
+            inspecciones.forEach((inspeccion, index) => {
+                const row = document.createElement('tr');
+                row.innerHTML = `
+                    <td class="border p-2">${inspeccion.losaId}</td>
+                    <td class="border p-2">${inspeccion.fecha}</td>
+                    <td class="border p-2">${inspeccion.patologia}</td>
+                    <td class="border p-2">${inspeccion.longitud}</td>
+                    <td class="border p-2">${inspeccion.estado}</td>
+                    <td class="border p-2">
+                        <button onclick="eliminarInspeccion(${index})" class="bg-red-500 text-white p-1 rounded hover:bg-red-600">Eliminar</button>
+                    </td>
+                `;
+                tableBody.appendChild(row);
+            });
+        }
+
+        function eliminarInspeccion(index) {
+            let inspecciones = JSON.parse(localStorage.getItem('inspecciones') || '[]');
+            inspecciones.splice(index, 1);
+            localStorage.setItem('inspecciones', JSON.stringify(inspecciones));
+            // Recargar opciones de losas
+            cargarOpcionesLosas();
+            cargarInspecciones();
+        }
+
+        // Registro del Service Worker para funcionalidad offline
+        if ('serviceWorker' in navigator) {
+            window.addEventListener('load', () => {
+                navigator.serviceWorker.register('/service-worker.js')
+                    .then(reg => console.log('Service Worker registrado'))
+                    .catch(err => console.log('Error al registrar Service Worker:', err));
+            });
+        }
+    </script>
+</body>
+</html>
